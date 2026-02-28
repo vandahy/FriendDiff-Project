@@ -45,7 +45,7 @@ function runFriendDiffAutomation() {
             } else {
                 console.log("FriendDiff: Could not find scrollable area yet...");
             }
-        }, 1500); // 1.5 seconds is a safe rate to avoid blocks
+        }, 6000); // 6.0 seconds is a much safer rate to avoid Instagram temporary bans
     }
 
     // 1. Check if the modal is already open
@@ -56,23 +56,112 @@ function runFriendDiffAutomation() {
         return;
     }
 
-    // 2. Not open, try to find the Followers link
-    const links = document.querySelectorAll('a');
-    let followersLink = null;
-    for (let a of links) {
-        if (a.href && a.href.includes('/followers/')) {
-            followersLink = a;
-            break;
+    function findFollowersLink() {
+        const links = document.querySelectorAll('a');
+        for (let a of links) {
+            if (a.href && a.href.includes('/followers/')) {
+                return a;
+            }
+        }
+        return null;
+    }
+
+    function clickFollowersAndScan() {
+        const followersPath = window.location.pathname;
+
+        // React Router Edge Case: If we are ALREADY on the /followers/ URL (e.g. from F5),
+        // clicking the link does nothing because the Router thinks we are already there!
+        if (followersPath.includes('/followers')) {
+            const basePath = followersPath.replace(/\/followers\/?/, '/');
+            const baseLinks = document.querySelectorAll(`a[href="${basePath}"]`);
+            // Find a valid profile link that resets the state (the username link on the profile is one)
+            let resetLink = null;
+            for (let a of baseLinks) {
+                if (a.textContent.length > 0) { resetLink = a; break; }
+            }
+            if (resetLink) {
+                console.log("FriendDiff: Resetting React Router state to profile base...");
+                resetLink.click();
+                setTimeout(() => {
+                    const fl = findFollowersLink();
+                    if (fl) {
+                        console.log("FriendDiff: Re-clicking Followers link...");
+                        fl.click();
+                        setTimeout(startScrolling, 2500);
+                    }
+                }, 1000);
+                return true;
+            }
+        }
+
+        const followersLink = findFollowersLink();
+        if (followersLink) {
+            console.log("FriendDiff: Clicking Followers link...");
+            followersLink.click();
+            setTimeout(startScrolling, 2500);
+            return true;
+        }
+        return false;
+    }
+
+    // 2. Try to click Followers directly (if we are already on the profile page)
+    if (clickFollowersAndScan()) {
+        return;
+    }
+
+    // 3. We are likely on the Homepage. Find the Profile link in the Sidebar!
+    console.log("FriendDiff: Not on Profile Page. Finding Sidebar...");
+    let sidebarProfileLink = null;
+
+    // The sidebar usually contains many standard links like Home (/) and Explore (/explore/)
+    const navs = document.querySelectorAll('div, nav');
+    let sidebar = null;
+    for (let n of navs) {
+        const links = n.querySelectorAll('a[href^="/"]');
+        if (links.length > 4) {
+            const hasHome = Array.from(links).some(l => l.getAttribute('href') === '/');
+            const hasExplore = Array.from(links).some(l => l.getAttribute('href') && l.getAttribute('href').includes('/explore'));
+            if (hasHome && hasExplore) {
+                sidebar = n;
+                break;
+            }
         }
     }
 
-    if (followersLink) {
-        console.log("FriendDiff: Clicking Followers link...");
-        followersLink.click();
-        // Wait a bit for the modal to open before scrolling
-        setTimeout(startScrolling, 2500);
+    if (sidebar) {
+        const links = sidebar.querySelectorAll('a[href^="/"]');
+        for (let a of links) {
+            const href = a.getAttribute('href');
+            // A profile link is typically like /username/ but not standard system paths
+            if (href && href !== '/' && !href.includes('/explore') && !href.includes('/reels') && !href.includes('/direct') && !href.includes('/your_activity')) {
+                sidebarProfileLink = a;
+                break;
+            }
+        }
     } else {
-        alert("FriendDiff: Please go to your Profile page first!");
+        // Fallback: search by text
+        const allLinks = document.querySelectorAll('a[role="link"], a');
+        for (let a of allLinks) {
+            const text = a.textContent.toLowerCase().trim();
+            if (text === 'profile' || text === 'trang cá nhân') {
+                sidebarProfileLink = a;
+                break;
+            }
+        }
+    }
+
+    if (sidebarProfileLink) {
+        console.log("FriendDiff: Navigating to Profile via Sidebar...", sidebarProfileLink.getAttribute('href'));
+        sidebarProfileLink.click();
+
+        // Wait 2.5 seconds for the React Router to render the Profile page, THEN click Followers
+        setTimeout(() => {
+            if (!clickFollowersAndScan()) {
+                alert("FriendDiff: Could not find Followers button even after navigating to Profile. Please open it manually.");
+            }
+        }, 2500);
+    } else {
+        alert("FriendDiff: Please go to your Profile page first! We couldn't auto-navigate.");
     }
 }
 
@@ -86,35 +175,77 @@ function stopAutoScrollInstagram() {
 export default function App() {
     const [isScanning, setIsScanning] = useState(false);
     const [history, setHistory] = useState([]);
+    const [scannedCount, setScannedCount] = useState(0);
 
-    // Load history when popup opens and listen for changes
+    const [trackedAccounts, setTrackedAccounts] = useState([]);
+    const [selectedUserId, setSelectedUserId] = useState("");
+
+    // 1. Initial Load: Get tracked accounts and auto-select based on current tab URL
     React.useEffect(() => {
-        // Initial load
-        chrome.storage.local.get("unfollowersHistory", (result) => {
-            if (result.unfollowersHistory) {
-                setHistory(result.unfollowersHistory);
+        async function loadAccounts() {
+            let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            let currentUrlUsername = "";
+            if (tab && tab.url.includes("instagram.com")) {
+                const match = new URL(tab.url).pathname.match(/^\/([a-zA-Z0-9._]+)\/?/);
+                if (match && !["explore", "direct", "reels"].includes(match[1])) {
+                    currentUrlUsername = match[1];
+                }
             }
+
+            chrome.storage.local.get(["friendDiffTrackedAccounts"], (res) => {
+                const accounts = res.friendDiffTrackedAccounts || [];
+                if (accounts.length > 0) {
+                    setTrackedAccounts(accounts);
+                    const matched = accounts.find(a => a.username === currentUrlUsername);
+                    if (matched) {
+                        setSelectedUserId(matched.userId);
+                    } else {
+                        setSelectedUserId(accounts[0].userId);
+                    }
+                }
+            });
+        }
+        loadAccounts();
+    }, []);
+
+    // 2. When selected account changes, load its history and listen for updates
+    React.useEffect(() => {
+        if (!selectedUserId) {
+            setHistory([]);
+            setScannedCount(0);
+            return;
+        }
+
+        const historyKey = `unfollowersHistory_${selectedUserId}`;
+        const bufferKey = `friendDiffSessionBuffer_${selectedUserId}`;
+
+        chrome.storage.local.get([historyKey], (result) => {
+            setHistory(result[historyKey] || []);
         });
 
         // Listen for real-time updates from Service Worker
         const handleStorageChange = (changes, area) => {
-            if (area === "local" && changes.unfollowersHistory) {
-                setHistory(changes.unfollowersHistory.newValue || []);
-            }
-            if (area === "local" && changes.friendDiffSessionBuffer) {
-                // Optional: We could update progress here if we wanted
+            if (area === "local") {
+                if (changes[historyKey]) {
+                    setHistory(changes[historyKey].newValue || []);
+                }
+                if (changes.friendDiffTrackedAccounts) {
+                    setTrackedAccounts(changes.friendDiffTrackedAccounts.newValue || []);
+                }
+                if (changes[bufferKey]) {
+                    setScannedCount(changes[bufferKey].newValue?.length || 0);
+                }
             }
         };
 
         chrome.storage.onChanged.addListener(handleStorageChange);
-
-        return () => {
-            chrome.storage.onChanged.removeListener(handleStorageChange);
-        };
-    }, []);
+        return () => chrome.storage.onChanged.removeListener(handleStorageChange);
+    }, [selectedUserId]);
 
     const clearHistory = () => {
-        chrome.storage.local.remove("unfollowersHistory", () => {
+        if (!selectedUserId) return;
+        const historyKey = `unfollowersHistory_${selectedUserId}`;
+        chrome.storage.local.remove([historyKey], () => {
             setHistory([]);
         });
     };
@@ -126,6 +257,7 @@ export default function App() {
             return;
         }
 
+        setScannedCount(0); // Reset UI counter
         chrome.scripting.executeScript({
             target: { tabId: tab.id },
             func: runFriendDiffAutomation,
@@ -173,15 +305,28 @@ export default function App() {
             </div>
 
             <div style={{ fontSize: '12px', color: isScanning ? '#28a745' : '#666', marginBottom: '15px' }}>
-                Status: <strong>{isScanning ? "Scanning (please wait)..." : "Idle"}</strong>
+                Status: <strong>{isScanning ? `Đang Quét... (${scannedCount} người)` : `Tiếp nhận: ${scannedCount} / Chờ lệnh`}</strong>
             </div>
 
             {/* History Section */}
             <div style={{ textAlign: 'left', borderTop: '1px solid #ddd', paddingTop: '10px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                    <h3 style={{ margin: 0, fontSize: '14px', color: '#ff3b30' }}>Recent Unfollowers</h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <h3 style={{ margin: 0, fontSize: '14px', color: '#ff3b30' }}>Unfollowers</h3>
+                        {trackedAccounts.length > 0 && (
+                            <select
+                                value={selectedUserId}
+                                onChange={(e) => setSelectedUserId(e.target.value)}
+                                style={{ fontSize: '11px', padding: '2px 4px', borderRadius: '4px', maxWidth: '120px', border: '1px solid #ccc' }}
+                            >
+                                {trackedAccounts.map(a => (
+                                    <option key={a.userId} value={a.userId}>@{a.username}</option>
+                                ))}
+                            </select>
+                        )}
+                    </div>
                     {history.length > 0 && (
-                        <button onClick={clearHistory} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '11px', textDecoration: 'underline' }}>
+                        <button onClick={clearHistory} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '11px', textDecoration: 'underline', padding: 0 }}>
                             Clear
                         </button>
                     )}
