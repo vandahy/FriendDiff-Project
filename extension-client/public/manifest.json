@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "FriendDiff",
+  "version": "1.0.0",
+  "description": "Social media unfollow tracker",
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "FriendDiff"
+  },
+  "background": {
+    "service_worker": "service_worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["inject.js"]
+    }
+  ],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "*://*.instagram.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["interceptor.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
