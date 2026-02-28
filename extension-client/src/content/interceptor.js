@@ -69,6 +69,12 @@
     const isFirstPage = checkIsFirstPage(urlStr);
 
     let userId = null;
+    let username = null;
+    const pathMatch = window.location.pathname.match(/^\/([a-zA-Z0-9._]+)\/?/);
+    if (pathMatch && pathMatch[1] !== "explore" && pathMatch[1] !== "direct" && pathMatch[1] !== "reels") {
+        username = pathMatch[1];
+    }
+
     if (urlStr.includes('/friendships/')) {
         const match = urlStr.match(/\/friendships\/(\d+)\//);
         if (match) userId = match[1];
@@ -80,10 +86,40 @@
         } catch(e) {}
     }
 
+    // MEMOIZE userId and username to survive obfuscated GraphQL requests
+    if (userId) {
+        window.__friendDiffCurrentUserId = userId;
+    } else if (window.__friendDiffCurrentUserId) {
+        userId = window.__friendDiffCurrentUserId;
+    }
+    
+    if (username) {
+        window.__friendDiffCurrentUsername = username;
+    } else if (window.__friendDiffCurrentUsername) {
+        username = window.__friendDiffCurrentUsername;
+    }
+
+    // --- NEW CHECK: PREVENT CROSS-ACCOUNT SCANNING ---
+    function getCookie(name) {
+      const value = `; ${document.cookie}`;
+      const parts = value.split(`; ${name}=`);
+      if (parts.length === 2) return parts.pop().split(';').shift();
+    }
+    const loggedInUserId = getCookie('ds_user_id');
+    
+    if (loggedInUserId && userId && loggedInUserId !== userId) {
+      console.warn(`[FriendDiff] Blocked scan: Logged in as ${loggedInUserId}, but viewing profile of ${userId}.`);
+      window.dispatchEvent(new CustomEvent('FRIEND_DIFF_ERROR', { 
+        detail: { message: `Bạn đang đăng nhập tài khoản khác. Vui lòng đăng nhập đúng tài khoản @${username} để scan chính xác!` } 
+      }));
+      return null;
+    }
+    // --- END CHECK ---
+
     if (friends.length > 0) {
       console.log(`%c[FriendDiff] Extracted ${friends.length} FOLLOWERS. FirstPage: ${isFirstPage}, HasNextPage: ${hasNextPage}`, "color: #00ff00; font-weight: bold;");
       window.dispatchEvent(new CustomEvent('FRIEND_DIFF_DATA', { 
-        detail: { friends, hasNextPage, isFirstPage, userId } 
+        detail: { friends, hasNextPage, isFirstPage, userId, username } 
       }));
     }
     return { friends, hasNextPage, isFirstPage };
