@@ -179,10 +179,12 @@ export default function App() {
 
     const [trackedAccounts, setTrackedAccounts] = useState([]);
     const [selectedUserId, setSelectedUserId] = useState("");
+    const [telegramChatId, setTelegramChatId] = useState("");
+    const [saveStatus, setSaveStatus] = useState("");
 
     // 1. Initial Load: Get tracked accounts and auto-select based on current tab URL
     React.useEffect(() => {
-        async function loadAccounts() {
+        async function loadData() {
             let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             let currentUrlUsername = "";
             if (tab && tab.url.includes("instagram.com")) {
@@ -192,7 +194,13 @@ export default function App() {
                 }
             }
 
-            chrome.storage.local.get(["friendDiffTrackedAccounts"], (res) => {
+            chrome.storage.local.get(["friendDiffTrackedAccounts", "telegramChatId", "isScanning"], (res) => {
+                if (res.telegramChatId) {
+                    setTelegramChatId(res.telegramChatId);
+                }
+                if (res.isScanning) {
+                    setIsScanning(res.isScanning);
+                }
                 const accounts = res.friendDiffTrackedAccounts || [];
                 if (accounts.length > 0) {
                     setTrackedAccounts(accounts);
@@ -205,8 +213,15 @@ export default function App() {
                 }
             });
         }
-        loadAccounts();
+        loadData();
     }, []);
+
+    const handleSaveChatId = () => {
+        chrome.storage.local.set({ telegramChatId }, () => {
+            setSaveStatus("Saved!");
+            setTimeout(() => setSaveStatus(""), 2000);
+        });
+    };
 
     // 2. When selected account changes, load its history and listen for updates
     React.useEffect(() => {
@@ -235,6 +250,9 @@ export default function App() {
                 if (changes[bufferKey]) {
                     setScannedCount(changes[bufferKey].newValue?.length || 0);
                 }
+                if (changes.isScanning !== undefined) {
+                    setIsScanning(changes.isScanning.newValue || false);
+                }
             }
         };
 
@@ -258,24 +276,26 @@ export default function App() {
         }
 
         setScannedCount(0); // Reset UI counter
-        chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: runFriendDiffAutomation,
-        }, () => {
+        chrome.storage.local.set({ isScanning: true }, () => {
             setIsScanning(true);
+            chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                func: runFriendDiffAutomation,
+            });
         });
     };
 
     const handleStopScan = async () => {
         let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab) {
-            chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                func: stopAutoScrollInstagram,
-            }, () => {
-                setIsScanning(false);
-            });
-        }
+        chrome.storage.local.set({ isScanning: false }, () => {
+            setIsScanning(false);
+            if (tab) {
+                chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    func: stopAutoScrollInstagram,
+                });
+            }
+        });
     };
 
     return (
@@ -302,6 +322,28 @@ export default function App() {
                         ⛔ Stop Scanning
                     </button>
                 )}
+            </div>
+
+            {/* Telegram Config Section */}
+            <div style={{ margin: '15px 0', padding: '10px', backgroundColor: '#e8f4fd', borderRadius: '8px', textAlign: 'left' }}>
+                <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#333' }}>Telegram Notification (Optional)</label>
+                <div style={{ fontSize: '11px', color: '#666', marginBottom: '8px' }}>
+                    Get Chat ID via <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" style={{ color: '#0095f6' }}>@userinfobot</a>
+                </div>
+                <div style={{ display: 'flex', gap: '5px' }}>
+                    <input
+                        type="text"
+                        value={telegramChatId}
+                        onChange={(e) => setTelegramChatId(e.target.value)}
+                        placeholder="Enter your Chat ID"
+                        style={{ flex: 1, padding: '6px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px' }}
+                    />
+                    <button
+                        onClick={handleSaveChatId}
+                        style={{ padding: '6px 10px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+                        {saveStatus || "Save"}
+                    </button>
+                </div>
             </div>
 
             <div style={{ fontSize: '12px', color: isScanning ? '#28a745' : '#666', marginBottom: '15px' }}>
