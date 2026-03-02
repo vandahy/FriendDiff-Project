@@ -57,7 +57,16 @@ function calculateUnfollowers(oldList, currentAccumulatedList) {
 
 async function sendToBackend(unfollowers) {
   if (unfollowers.length === 0) return;
-  const payload = { unfollowers: unfollowers, timestamp: Date.now() };
+  
+  // Retrieve the user-configured Telegram Chat ID, if any.
+  const stored = await chrome.storage.local.get(['telegramChatId']);
+  const telegramChatId = stored.telegramChatId || null;
+
+  const payload = { 
+    unfollowers: unfollowers, 
+    timestamp: Date.now(),
+    telegram_chat_id: telegramChatId 
+  };
 
   try {
     const response = await fetch('http://127.0.0.1:8000/api/unfollowers', {
@@ -138,6 +147,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
               if (missingRatio > MISSING_THRESHOLD || missingCount > MAX_FLAT_MISSING) {
                   broadcastLog(`Lỗi mạng/API: Quét bị thiếu ${missingCount} người một cách bất thường. Đã hủy ghi nhận Unfollowers để bảo vệ dữ liệu!`, "error");
+                  await chrome.storage.local.set({ isScanning: false });
                   return; // Abort here, do not overwrite snapshot.
               }
           }
@@ -164,15 +174,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             
             // Overwrite snapshot
             await saveSnapshot(userId, currentBuffer);
+            await chrome.storage.local.set({ isScanning: false });
           } else {
             broadcastLog("Scan complete: No changes detected.");
             if (currentBuffer.length > oldData.length) {
                await saveSnapshot(userId, currentBuffer);
             }
+            await chrome.storage.local.set({ isScanning: false });
           }
         } else {
           broadcastLog("Initial scan complete. Snapshot saved.");
           await saveSnapshot(userId, currentBuffer);
+          await chrome.storage.local.set({ isScanning: false });
         }
       }
     })();
