@@ -10,4 +10,5 @@ class UnfollowerItem(BaseModel):
 
 class UnfollowPayload(BaseModel):
     unfollowers: List[UnfollowerItem]
+    telegram_chat_id: Optional[str] = None
     timestamp: Optional[int] = None

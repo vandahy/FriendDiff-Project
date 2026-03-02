@@ -5,7 +5,15 @@
 
   function isTargetUrl(url) {
     if (!url) return false;
-    const urlStr = String(url).toLowerCase();
+    let urlStr = '';
+    if (typeof url === 'string') {
+      urlStr = url;
+    } else if (url && url.url) {
+      urlStr = url.url;
+    } else {
+      urlStr = String(url);
+    }
+    urlStr = urlStr.toLowerCase();
     // We explicitly avoid matching 'following' to avoid clobbering the Followers snapshot
     if (urlStr.includes('following')) return false;
     return TARGET_KEYWORDS.some(key => urlStr.includes(key));

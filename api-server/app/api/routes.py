@@ -15,7 +15,7 @@ async def notify_unfollowers_async(payload: UnfollowPayload):
     names_str = "\n".join(names)
     message = f"<b>🚨 FriendDiff Alert</b>\n\nYou have {len(payload.unfollowers)} new unfollower(s):\n{names_str}"
     
-    await send_telegram_notification(message)
+    await send_telegram_notification(message, payload.telegram_chat_id)
 
 @router.post("/unfollowers")
 async def report_unfollowers(payload: UnfollowPayload, background_tasks: BackgroundTasks):
