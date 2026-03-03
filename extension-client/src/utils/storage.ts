@@ -1,7 +1,5 @@
 import localforage from 'localforage';
 
-// Configure localforage to use IndexedDB explicitly
-// Similar to configuring a database connection in Spring/PHP
 localforage.config({
   driver: localforage.INDEXEDDB,
   name: 'FriendDiffDB',
@@ -12,12 +10,17 @@ localforage.config({
 
 const SNAPSHOT_KEY_PREFIX = 'latest_followers_snapshot_';
 
+export interface UserSnapshot {
+  id: string;
+  name?: string;
+  username: string;
+  pic_url?: string;
+}
+
 /**
  * Save a new snapshot of users.
- * @param {string} userId
- * @param {Array<{id: string, name: string}>} users 
  */
-export async function saveSnapshot(userId, users) {
+export async function saveSnapshot(userId: string, users: UserSnapshot[]): Promise<boolean> {
   try {
     await localforage.setItem(SNAPSHOT_KEY_PREFIX + userId, users);
     console.log(`Saved snapshot with ${users.length} users for ${userId}.`);
@@ -30,12 +33,10 @@ export async function saveSnapshot(userId, users) {
 
 /**
  * Retrieve the last saved snapshot.
- * @param {string} userId
- * @returns {Promise<Array<{id: string, name: string}> | null>}
  */
-export async function getSnapshot(userId) {
+export async function getSnapshot(userId: string): Promise<UserSnapshot[] | null> {
   try {
-    const value = await localforage.getItem(SNAPSHOT_KEY_PREFIX + userId);
+    const value = await localforage.getItem<UserSnapshot[]>(SNAPSHOT_KEY_PREFIX + userId);
     return value;
   } catch (err) {
     console.error('Error retrieving snapshot:', err);

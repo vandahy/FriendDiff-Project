@@ -1,19 +1,19 @@
-import { getSnapshot, saveSnapshot } from '../utils/storage.js';
+import { getSnapshot, saveSnapshot, UserSnapshot } from '../utils/storage.ts';
 
 console.log("FriendDiff Background Service Worker initialized.");
 
 // We use chrome.storage.local to persist the buffer across Service Worker Sleeps!
 // Manifest V3 kills the SW if idle, clearing global variables like `let sessionBuffer = new Map()`
 
-async function getSessionBuffer(userId) {
+async function getSessionBuffer(userId: string): Promise<UserSnapshot[]> {
   const key = `friendDiffSessionBuffer_${userId}`;
   const data = await chrome.storage.local.get([key]);
-  return data[key] || []; // Array of {id, name}
+  return (data[key] as UserSnapshot[]) || []; // Array of {id, name}
 }
 
-async function appendToSessionBuffer(userId, friendsBatch) {
+async function appendToSessionBuffer(userId: string, friendsBatch: UserSnapshot[]): Promise<UserSnapshot[]> {
   let existingBuffer = await getSessionBuffer(userId);
-  
+
   // Deduplicate by ID
   const existingIds = new Set(existingBuffer.map(f => f.id));
   friendsBatch.forEach(f => {
@@ -27,45 +27,50 @@ async function appendToSessionBuffer(userId, friendsBatch) {
   return existingBuffer;
 }
 
-async function clearSessionBuffer(userId) {
+async function clearSessionBuffer(userId: string): Promise<void> {
   const key = `friendDiffSessionBuffer_${userId}`;
   await chrome.storage.local.remove([key]);
 }
 
-async function updateTrackedAccounts(userId, username) {
+interface TrackedAccount {
+  userId: string;
+  username: string;
+}
+
+async function updateTrackedAccounts(userId: string, username: string): Promise<void> {
   if (!userId || !username) return;
   const data = await chrome.storage.local.get(['friendDiffTrackedAccounts']);
-  let accounts = data.friendDiffTrackedAccounts || [];
-  
+  let accounts: TrackedAccount[] = (data.friendDiffTrackedAccounts as TrackedAccount[]) || [];
+
   const idx = accounts.findIndex(a => a.userId === userId);
   if (idx >= 0) {
-     accounts[idx].username = username; // Update username if they changed it
+    accounts[idx].username = username; // Update username if they changed it
   } else {
-     accounts.push({ userId, username });
+    accounts.push({ userId, username });
   }
   await chrome.storage.local.set({ friendDiffTrackedAccounts: accounts });
 }
 
 // Alarm listener removed to enforce 100% safe manual-only scanning!
 
-function calculateUnfollowers(oldList, currentAccumulatedList) {
+function calculateUnfollowers(oldList: UserSnapshot[], currentAccumulatedList: UserSnapshot[]): UserSnapshot[] {
   if (!oldList || oldList.length === 0) return [];
   const currentIds = new Set(currentAccumulatedList.map(item => item.id));
   const unfollowers = oldList.filter(oldItem => !currentIds.has(oldItem.id));
   return unfollowers;
 }
 
-async function sendToBackend(unfollowers) {
+async function sendToBackend(unfollowers: UserSnapshot[]): Promise<void> {
   if (unfollowers.length === 0) return;
-  
+
   // Retrieve the user-configured Telegram Chat ID, if any.
   const stored = await chrome.storage.local.get(['telegramChatId']);
   const telegramChatId = stored.telegramChatId || null;
 
-  const payload = { 
-    unfollowers: unfollowers, 
+  const payload = {
+    unfollowers: unfollowers,
     timestamp: Date.now(),
-    telegram_chat_id: telegramChatId 
+    telegram_chat_id: telegramChatId
   };
 
   try {
@@ -86,27 +91,27 @@ async function sendToBackend(unfollowers) {
 
 // Utility to broadcast a log message to the currently active tab (Instagram)
 // so the user can see it in F12 without opening the Service Worker console.
-function broadcastLog(message, type = "info") {
-  chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-    if (tabs && tabs[0]) {
+function broadcastLog(message: string, type: "info" | "error" = "info"): void {
+  chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+    if (tabs && tabs[0] && tabs[0].id) {
       chrome.tabs.sendMessage(tabs[0].id, {
         action: "BROADCAST_LOG",
         message: message,
         type: type
-      }).catch(() => {}); // ignore errors if content script isn't ready
+      }).catch(() => { }); // ignore errors if content script isn't ready
     }
   });
 }
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, _sender, _sendResponse) => {
   if (request.action === 'REPORT_FRIEND_LIST') {
-    const freshBatch = request.data;
-    const isEnd = request.isEnd;
-    const isFirstPage = request.isFirstPage;
-    
-    const userId = request.userId;
-    const username = request.username;
-    
+    const freshBatch: UserSnapshot[] = request.data;
+    const isEnd: boolean = request.isEnd;
+    const isFirstPage: boolean = request.isFirstPage;
+
+    const userId: string = request.userId;
+    const username: string = request.username;
+
     if (userId) {
       chrome.storage.local.set({ friendDiffUserId: userId }); // Keep for legacy fallback if needed
       if (username) {
@@ -132,53 +137,53 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // 3. Diff and report ONLY when we reach the absolute end of the list
       if (isEnd) {
         const oldData = await getSnapshot(userId);
-        
+
         if (oldData && oldData.length > 0) {
           // --- SANITY CHECK: Protect against Network Error / API Rate Limit ---
           // If the scan drops a massive amount of followers suddenly, it's 99% a network error
           // or Instagram cutting off the pagination early. We MUST abort to save the snapshot.
           const missingCount = oldData.length - currentBuffer.length;
-          
+
           // Only apply heuristic if we have a decent sample size AND we actually lost people
           if (oldData.length > 20 && missingCount > 0) {
-              const missingRatio = missingCount / oldData.length;
-              const MISSING_THRESHOLD = 0.20; // 20% drop is suspicious
-              const MAX_FLAT_MISSING = 15;    // Losing 15 at once is suspicious
+            const missingRatio = missingCount / oldData.length;
+            const MISSING_THRESHOLD = 0.20; // 20% drop is suspicious
+            const MAX_FLAT_MISSING = 15;    // Losing 15 at once is suspicious
 
-              if (missingRatio > MISSING_THRESHOLD || missingCount > MAX_FLAT_MISSING) {
-                  broadcastLog(`Lỗi mạng/API: Quét bị thiếu ${missingCount} người một cách bất thường. Đã hủy ghi nhận Unfollowers để bảo vệ dữ liệu!`, "error");
-                  await chrome.storage.local.set({ isScanning: false });
-                  return; // Abort here, do not overwrite snapshot.
-              }
+            if (missingRatio > MISSING_THRESHOLD || missingCount > MAX_FLAT_MISSING) {
+              broadcastLog(`Lỗi mạng/API: Quét bị thiếu ${missingCount} người một cách bất thường. Đã hủy ghi nhận Unfollowers để bảo vệ dữ liệu!`, "error");
+              await chrome.storage.local.set({ isScanning: false });
+              return; // Abort here, do not overwrite snapshot.
+            }
           }
           // --- END SANITY CHECK ---
 
           const unfollowers = calculateUnfollowers(oldData, currentBuffer);
           if (unfollowers.length > 0) {
             broadcastLog(`Detected ${unfollowers.length} REAL unfollowers! Sending to Python...`, "error");
-            
+
             // 1. Send to Telegram
             await sendToBackend(unfollowers);
-            
+
             // 2. Save to local storage for the Popup UI to read, keyed by userId!
             const historyKey = `unfollowersHistory_${userId}`;
             const stored = await chrome.storage.local.get(historyKey);
             let history = stored[historyKey] || [];
-            
+
             // Prepend new unfollowers with a timestamp
             const now = new Date().toLocaleString();
-            const newEntries = unfollowers.map(u => ({ username: u.name || "Unknown", time: now }));
-            history = [...newEntries, ...history].slice(0, 50); // Keep last 50
-            
+            const newEntries = unfollowers.map(u => ({ username: u.name || u.username || "Unknown", time: now }));
+            history = [...newEntries, ...(history as any[])].slice(0, 50); // Keep last 50
+
             await chrome.storage.local.set({ [historyKey]: history });
-            
+
             // Overwrite snapshot
             await saveSnapshot(userId, currentBuffer);
             await chrome.storage.local.set({ isScanning: false });
           } else {
             broadcastLog("Scan complete: No changes detected.");
             if (currentBuffer.length > oldData.length) {
-               await saveSnapshot(userId, currentBuffer);
+              await saveSnapshot(userId, currentBuffer);
             }
             await chrome.storage.local.set({ isScanning: false });
           }
