@@ -19,7 +19,7 @@ injectScript(interceptorUrl, 'body');
 
 // Listen for the Custom Event dispatched by the Main World script
 window.addEventListener('FRIEND_DIFF_DATA', function(element) {
-  const { friends, hasNextPage, isFirstPage, userId } = element.detail;
+  const { friends, hasNextPage, isFirstPage, userId, username } = element.detail;
   
   function sendData() {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
@@ -29,9 +29,10 @@ window.addEventListener('FRIEND_DIFF_DATA', function(element) {
           data: friends, 
           isEnd: !hasNextPage, 
           isFirstPage: isFirstPage,
-          userId: userId
+          userId: userId,
+          username: username
         });
-        console.log(`FriendDiff: Data sent to Background (isFirst: ${isFirstPage}, isEnd: ${!hasNextPage}, userId: ${userId})`);
+        console.log(`FriendDiff: Data sent to Background (isFirst: ${isFirstPage}, isEnd: ${!hasNextPage}, userId: ${userId}, username: ${username})`);
       } catch (e) {
         console.warn("FriendDiff Extension context invalidated:", e);
       }
@@ -41,6 +42,15 @@ window.addEventListener('FRIEND_DIFF_DATA', function(element) {
   }
 
   sendData();
+});
+
+window.addEventListener('FRIEND_DIFF_ERROR', function(element) {
+  const { message } = element.detail;
+  alert(`FriendDiff Cảnh Báo: ${message}`);
+  
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+    chrome.runtime.sendMessage({ action: "STOP_SCAN" }).catch(() => {});
+  }
 });
 
 // Listen for broadcast logs from the Background script so we can see them in F12
