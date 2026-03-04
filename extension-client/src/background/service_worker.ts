@@ -1,6 +1,19 @@
 import { getSnapshot, saveSnapshot, UserSnapshot } from '../utils/storage.ts';
+import { trackInstall, trackDailyActive } from './analytics.ts';
 
 console.log("FriendDiff Background Service Worker initialized.");
+
+// ─── Analytics: Active Users Tracking ────────────────────────────────────────
+
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === 'install') {
+    trackInstall();
+  }
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  trackDailyActive();
+});
 
 // We use chrome.storage.local to persist the buffer across Service Worker Sleeps!
 // Manifest V3 kills the SW if idle, clearing global variables like `let sessionBuffer = new Map()`
