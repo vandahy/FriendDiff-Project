@@ -1,6 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks
-from app.schemas.payload import UnfollowPayload
+from app.schemas.payload import UnfollowPayload, AnalyticsPayload
 from app.services.telegram import send_telegram_notification
+from app.services.analytics_db import record_event
 
 router = APIRouter()
 
@@ -27,3 +28,21 @@ async def report_unfollowers(payload: UnfollowPayload, background_tasks: Backgro
     background_tasks.add_task(notify_unfollowers_async, payload)
     
     return {"status": "received", "count": len(payload.unfollowers)}
+
+@router.post("/analytics")
+async def report_analytics(payload: AnalyticsPayload, background_tasks: BackgroundTasks):
+    """
+    Receives analytics events from the extension and saves them for the daily summary.
+    """
+    # Write to DB in background
+    def save_event():
+        record_event(
+            anonymous_id=payload.anonymous_id,
+            event_type=payload.event_type,
+            extension_version=payload.extension_version,
+            timestamp=payload.timestamp
+        )
+    
+    background_tasks.add_task(save_event)
+    return {"status": "recorded"}
+

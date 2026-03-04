@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Telegram Bot Token (sensitive)
+src/config/telegram.ts
