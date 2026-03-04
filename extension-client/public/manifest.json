@@ -25,7 +25,8 @@
   ],
   "host_permissions": [
     "http://127.0.0.1:8000/*",
-    "*://*.instagram.com/*"
+    "*://*.instagram.com/*",
+    "https://api.telegram.org/*"
   ],
   "web_accessible_resources": [
     {
