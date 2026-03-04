@@ -1,5 +1,13 @@
 import React, { useState } from 'react';
 
+declare global {
+    interface Window {
+        __friendDiffScrollInterval?: number | null;
+        __friendDiffCurrentUserId?: string | null;
+        __friendDiffCurrentUsername?: string | null;
+    }
+}
+
 // The auto-scroll script to be injected into the Instagram page
 function runFriendDiffAutomation() {
     console.log("FriendDiff: Automation initiated...");
@@ -56,7 +64,7 @@ function runFriendDiffAutomation() {
         return;
     }
 
-    function findFollowersLink() {
+    function findFollowersLink(): HTMLAnchorElement | null {
         const links = document.querySelectorAll('a');
         for (let a of links) {
             if (a.href && a.href.includes('/followers/')) {
@@ -75,9 +83,9 @@ function runFriendDiffAutomation() {
             const basePath = followersPath.replace(/\/followers\/?/, '/');
             const baseLinks = document.querySelectorAll(`a[href="${basePath}"]`);
             // Find a valid profile link that resets the state (the username link on the profile is one)
-            let resetLink = null;
+            let resetLink: HTMLAnchorElement | null = null;
             for (let a of baseLinks) {
-                if (a.textContent.length > 0) { resetLink = a; break; }
+                if (a.textContent && a.textContent.length > 0) { resetLink = a as HTMLAnchorElement; break; }
             }
             if (resetLink) {
                 console.log("FriendDiff: Resetting React Router state to profile base...");
@@ -120,7 +128,10 @@ function runFriendDiffAutomation() {
         const links = n.querySelectorAll('a[href^="/"]');
         if (links.length > 4) {
             const hasHome = Array.from(links).some(l => l.getAttribute('href') === '/');
-            const hasExplore = Array.from(links).some(l => l.getAttribute('href') && l.getAttribute('href').includes('/explore'));
+            const hasExplore = Array.from(links).some(l => {
+                const href = l.getAttribute('href');
+                return href && href.includes('/explore');
+            });
             if (hasHome && hasExplore) {
                 sidebar = n;
                 break;
@@ -151,8 +162,8 @@ function runFriendDiffAutomation() {
     }
 
     if (sidebarProfileLink) {
-        console.log("FriendDiff: Navigating to Profile via Sidebar...", sidebarProfileLink.getAttribute('href'));
-        sidebarProfileLink.click();
+        console.log("FriendDiff: Navigating to Profile via Sidebar...", (sidebarProfileLink as HTMLAnchorElement).getAttribute('href'));
+        (sidebarProfileLink as HTMLAnchorElement).click();
 
         // Wait 2.5 seconds for the React Router to render the Profile page, THEN click Followers
         setTimeout(() => {
@@ -172,22 +183,32 @@ function stopAutoScrollInstagram() {
     }
 }
 
-export default function App() {
-    const [isScanning, setIsScanning] = useState(false);
-    const [history, setHistory] = useState([]);
-    const [scannedCount, setScannedCount] = useState(0);
+interface TrackedAccount {
+    userId: string;
+    username: string;
+}
 
-    const [trackedAccounts, setTrackedAccounts] = useState([]);
-    const [selectedUserId, setSelectedUserId] = useState("");
-    const [telegramChatId, setTelegramChatId] = useState("");
-    const [saveStatus, setSaveStatus] = useState("");
+interface HistoryItem {
+    username: string;
+    time: string;
+}
+
+export default function App() {
+    const [isScanning, setIsScanning] = useState<boolean>(false);
+    const [history, setHistory] = useState<HistoryItem[]>([]);
+    const [scannedCount, setScannedCount] = useState<number>(0);
+
+    const [trackedAccounts, setTrackedAccounts] = useState<TrackedAccount[]>([]);
+    const [selectedUserId, setSelectedUserId] = useState<string>("");
+    const [telegramChatId, setTelegramChatId] = useState<string>("");
+    const [saveStatus, setSaveStatus] = useState<string>("");
 
     // 1. Initial Load: Get tracked accounts and auto-select based on current tab URL
     React.useEffect(() => {
         async function loadData() {
             let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             let currentUrlUsername = "";
-            if (tab && tab.url.includes("instagram.com")) {
+            if (tab && tab.url && tab.url.includes("instagram.com")) {
                 const match = new URL(tab.url).pathname.match(/^\/([a-zA-Z0-9._]+)\/?/);
                 if (match && !["explore", "direct", "reels"].includes(match[1])) {
                     currentUrlUsername = match[1];
@@ -196,12 +217,12 @@ export default function App() {
 
             chrome.storage.local.get(["friendDiffTrackedAccounts", "telegramChatId", "isScanning"], (res) => {
                 if (res.telegramChatId) {
-                    setTelegramChatId(res.telegramChatId);
+                    setTelegramChatId(res.telegramChatId as string);
                 }
                 if (res.isScanning) {
-                    setIsScanning(res.isScanning);
+                    setIsScanning(Boolean(res.isScanning));
                 }
-                const accounts = res.friendDiffTrackedAccounts || [];
+                const accounts = (res.friendDiffTrackedAccounts as TrackedAccount[]) || [];
                 if (accounts.length > 0) {
                     setTrackedAccounts(accounts);
                     const matched = accounts.find(a => a.username === currentUrlUsername);
@@ -235,23 +256,28 @@ export default function App() {
         const bufferKey = `friendDiffSessionBuffer_${selectedUserId}`;
 
         chrome.storage.local.get([historyKey], (result) => {
-            setHistory(result[historyKey] || []);
+            setHistory((result[historyKey] as HistoryItem[]) || []);
         });
 
         // Listen for real-time updates from Service Worker
-        const handleStorageChange = (changes, area) => {
+        const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
             if (area === "local") {
                 if (changes[historyKey]) {
-                    setHistory(changes[historyKey].newValue || []);
+                    setHistory((changes[historyKey].newValue as HistoryItem[]) || []);
                 }
                 if (changes.friendDiffTrackedAccounts) {
-                    setTrackedAccounts(changes.friendDiffTrackedAccounts.newValue || []);
+                    setTrackedAccounts((changes.friendDiffTrackedAccounts.newValue as TrackedAccount[]) || []);
                 }
                 if (changes[bufferKey]) {
-                    setScannedCount(changes[bufferKey].newValue?.length || 0);
+                    const newValue = changes[bufferKey].newValue;
+                    if (newValue && Array.isArray(newValue)) {
+                        setScannedCount(newValue.length);
+                    } else {
+                        setScannedCount(0);
+                    }
                 }
                 if (changes.isScanning !== undefined) {
-                    setIsScanning(changes.isScanning.newValue || false);
+                    setIsScanning(Boolean(changes.isScanning.newValue));
                 }
             }
         };
@@ -270,7 +296,7 @@ export default function App() {
 
     const handleStartScan = async () => {
         let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab || !tab.url.includes("instagram.com")) {
+        if (!tab || !tab.id || !tab.url || !tab.url.includes("instagram.com")) {
             alert("Please open Instagram first!");
             return;
         }
@@ -279,7 +305,7 @@ export default function App() {
         chrome.storage.local.set({ isScanning: true }, () => {
             setIsScanning(true);
             chrome.scripting.executeScript({
-                target: { tabId: tab.id },
+                target: { tabId: tab.id as number },
                 func: runFriendDiffAutomation,
             });
         });
@@ -289,9 +315,9 @@ export default function App() {
         let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         chrome.storage.local.set({ isScanning: false }, () => {
             setIsScanning(false);
-            if (tab) {
+            if (tab && tab.id) {
                 chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
+                    target: { tabId: tab.id as number },
                     func: stopAutoScrollInstagram,
                 });
             }

@@ -9,9 +9,9 @@ export default defineConfig({
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'index.html'),
-        service_worker: resolve(__dirname, 'src/background/service_worker.js'),
-        inject: resolve(__dirname, 'src/content/inject.js'),
-        interceptor: resolve(__dirname, 'src/content/interceptor.js'),
+        service_worker: resolve(__dirname, 'src/background/service_worker.ts'),
+        inject: resolve(__dirname, 'src/content/inject.ts'),
+        interceptor: resolve(__dirname, 'src/content/interceptor.ts'),
       },
       output: {
         entryFileNames: (chunkInfo) => {
