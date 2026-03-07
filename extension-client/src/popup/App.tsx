@@ -176,13 +176,6 @@ function runFriendDiffAutomation() {
     }
 }
 
-function stopAutoScrollInstagram() {
-    if (window.__friendDiffScrollInterval) {
-        clearInterval(window.__friendDiffScrollInterval);
-        console.log("FriendDiff: Auto-scroll stopped.");
-    }
-}
-
 interface TrackedAccount {
     userId: string;
     username: string;
@@ -202,26 +195,43 @@ export default function App() {
     const [selectedUserId, setSelectedUserId] = useState<string>("");
     const [telegramChatId, setTelegramChatId] = useState<string>("");
     const [saveStatus, setSaveStatus] = useState<string>("");
+    const [isOnProfile, setIsOnProfile] = useState<boolean>(true);
 
     // 1. Initial Load: Get tracked accounts and auto-select based on current tab URL
     React.useEffect(() => {
         async function loadData() {
             let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             let currentUrlUsername = "";
+            let onProfile = false;
             if (tab && tab.url && tab.url.includes("instagram.com")) {
                 const match = new URL(tab.url).pathname.match(/^\/([a-zA-Z0-9._]+)\/?/);
-                if (match && !["explore", "direct", "reels"].includes(match[1])) {
+                // In this context, we only consider it a profile if it's the exact profile OR followers page
+                if (match && !["explore", "direct", "reels", "stories", "p"].includes(match[1])) {
                     currentUrlUsername = match[1];
+                    onProfile = true;
                 }
             }
+            setIsOnProfile(onProfile);
 
             chrome.storage.local.get(["friendDiffTrackedAccounts", "telegramChatId", "isScanning"], (res) => {
                 if (res.telegramChatId) {
                     setTelegramChatId(res.telegramChatId as string);
                 }
+                
+                // Safety Check: If storage says we are scanning, verify the content script is actually running.
+                // If not running (e.g., user closed the tab or restarted browser), reset `isScanning` to false.
                 if (res.isScanning) {
-                    setIsScanning(Boolean(res.isScanning));
+                    chrome.tabs.query({url: "*://*.instagram.com/*"}, (tabs) => {
+                        if (tabs.length === 0) {
+                            // No Instagram tabs exist, obviously not scanning
+                            chrome.storage.local.set({ isScanning: false });
+                            setIsScanning(false);
+                        } else {
+                            setIsScanning(true);
+                        }
+                    });
                 }
+
                 const accounts = (res.friendDiffTrackedAccounts as TrackedAccount[]) || [];
                 if (accounts.length > 0) {
                     setTrackedAccounts(accounts);
@@ -302,8 +312,8 @@ export default function App() {
         }
 
         setScannedCount(0); // Reset UI counter
+        setIsScanning(true);
         chrome.storage.local.set({ isScanning: true }, () => {
-            setIsScanning(true);
             chrome.scripting.executeScript({
                 target: { tabId: tab.id as number },
                 func: runFriendDiffAutomation,
@@ -311,47 +321,59 @@ export default function App() {
         });
     };
 
-    const handleStopScan = async () => {
-        let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        chrome.storage.local.set({ isScanning: false }, () => {
-            setIsScanning(false);
-            if (tab && tab.id) {
-                chrome.scripting.executeScript({
-                    target: { tabId: tab.id as number },
-                    func: stopAutoScrollInstagram,
-                });
-            }
-        });
+    const handleGoToProfile = () => {
+        if (trackedAccounts.length > 0) {
+            chrome.tabs.create({ url: `https://www.instagram.com/${trackedAccounts[0].username}/` });
+        } else {
+            chrome.tabs.create({ url: 'https://www.instagram.com/' });
+        }
     };
 
     return (
         <div style={{ padding: '20px', width: '320px', fontFamily: 'sans-serif', textAlign: 'center' }}>
+            <style>
+                {`
+                @keyframes spin {
+                    from { transform: rotate(0deg); }
+                    to { transform: rotate(360deg); }
+                }
+                `}
+            </style>
             <h2>FriendDiff 🕵️‍♂️</h2>
             <p style={{ fontSize: '13px', color: '#555' }}>Turn Instagram manual labor into automation.</p>
 
-            <div style={{ margin: '15px 0', padding: '15px', backgroundColor: '#f0f2f5', borderRadius: '8px' }}>
+            <div style={{ margin: '15px 0', padding: '15px', backgroundColor: '#f9fafb', borderRadius: '8px' }}>
                 <p style={{ margin: '0 0 10px 0', fontSize: '12px' }}>
                     <strong>1.</strong> Go to your <em>Profile</em> page.<br />
                     <strong>2.</strong> Click the button below. We'll handle the rest!
                 </p>
 
                 {!isScanning ? (
-                    <button
-                        onClick={handleStartScan}
-                        style={{ padding: '10px 15px', background: '#0095f6', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
-                        🚀 Start Auto-Scan
-                    </button>
+                    isOnProfile ? (
+                        <button
+                            onClick={handleStartScan}
+                            style={{ padding: '10px 15px', background: '#0095f6', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
+                            🚀 Start Auto-Scan
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleGoToProfile}
+                            style={{ padding: '10px 15px', background: '#f59e0b', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
+                            👤 Go to Profile to Scan
+                        </button>
+                    )
                 ) : (
                     <button
-                        onClick={handleStopScan}
-                        style={{ padding: '10px 15px', background: '#ff3b30', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
-                        ⛔ Stop Scanning
+                        disabled
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 15px', background: '#e5e7eb', color: '#6b7280', border: 'none', borderRadius: '8px', cursor: 'not-allowed', fontWeight: 'bold', width: '100%' }}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+                        Scanning...
                     </button>
                 )}
             </div>
 
             {/* Telegram Config Section */}
-            <div style={{ margin: '15px 0', padding: '10px', backgroundColor: '#e8f4fd', borderRadius: '8px', textAlign: 'left' }}>
+            <div style={{ margin: '15px 0', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '8px', textAlign: 'left' }}>
                 <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#333' }}>Telegram Notification (Optional)</label>
                 <div style={{ fontSize: '11px', color: '#666', marginBottom: '8px' }}>
                     Get Chat ID via <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" style={{ color: '#0095f6' }}>@userinfobot</a>
@@ -366,14 +388,14 @@ export default function App() {
                     />
                     <button
                         onClick={handleSaveChatId}
-                        style={{ padding: '6px 10px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+                        style={{ padding: '6px 10px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }}>
                         {saveStatus || "Save"}
                     </button>
                 </div>
             </div>
 
             <div style={{ fontSize: '12px', color: isScanning ? '#28a745' : '#666', marginBottom: '15px' }}>
-                Status: <strong>{isScanning ? `Đang Quét... (${scannedCount} người)` : `Tiếp nhận: ${scannedCount} / Chờ lệnh`}</strong>
+                Status: <strong>{isScanning ? `Scanning... (${scannedCount} users)` : `${scannedCount} received / Pending`}</strong>
             </div>
 
             {/* History Section */}
@@ -385,7 +407,18 @@ export default function App() {
                             <select
                                 value={selectedUserId}
                                 onChange={(e) => setSelectedUserId(e.target.value)}
-                                style={{ fontSize: '11px', padding: '2px 4px', borderRadius: '4px', maxWidth: '120px', border: '1px solid #ccc' }}
+                                style={{ 
+                                    appearance: 'none', 
+                                    padding: '4px 24px 4px 8px', 
+                                    borderRadius: '8px', 
+                                    maxWidth: '120px', 
+                                    border: '1px solid #e5e7eb',
+                                    background: `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>') no-repeat right 8px center`,
+                                    backgroundColor: '#fff',
+                                    fontSize: '11px',
+                                    outline: 'none',
+                                    cursor: 'pointer'
+                                }}
                             >
                                 {trackedAccounts.map(a => (
                                     <option key={a.userId} value={a.userId}>@{a.username}</option>
@@ -401,9 +434,14 @@ export default function App() {
                 </div>
 
                 {history.length === 0 ? (
-                    <p style={{ fontSize: '12px', color: '#888', fontStyle: 'italic', textAlign: 'center' }}>
-                        No traitors found yet...
-                    </p>
+                    <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '8px', opacity: 0.6 }}>
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                        <p style={{ fontSize: '12px', color: '#6b7280', margin: 0 }}>
+                            No traitors found yet...
+                        </p>
+                    </div>
                 ) : (
                     <ul style={{ listStyleType: 'none', padding: 0, margin: 0, maxHeight: '150px', overflowY: 'auto' }}>
                         {history.map((item, index) => (
