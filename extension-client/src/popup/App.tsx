@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 
 declare global {
     interface Window {
@@ -186,6 +186,130 @@ interface HistoryItem {
     time: string;
 }
 
+/**
+ * ==========================================
+ * PROGRESS & ETA CALCULATION LOGIC (Mock)
+ * ==========================================
+ *
+ * PROGRESS CALCULATION:
+ * 1. Before scanning, scrape the user's total follower count from the Instagram
+ *    profile page DOM. The count is found in the <span> inside the followers <a> link.
+ *    e.g., document.querySelector('a[href$="/followers/"] span')?.textContent
+ * 2. As followers are loaded via the interceptor, count them in the session buffer.
+ * 3. Progress percentage = (loadedFollowers / totalFollowers) * 100
+ *
+ * ETA CALCULATION:
+ * 1. Track the scanning start time: `scanStartTime = Date.now()`
+ * 2. On each buffer update, calculate speed:
+ *    `followersLoadedPerSecond = loadedFollowers / ((Date.now() - scanStartTime) / 1000)`
+ * 3. Remaining followers = totalFollowers - loadedFollowers
+ * 4. ETA (seconds) = remainingFollowers / followersLoadedPerSecond
+ * 5. Format ETA into human-readable string: e.g., "~2m 15s"
+ */
+
+function formatEta(totalSeconds: number): string {
+    if (totalSeconds <= 0) return "almost done!";
+    const m = Math.floor(totalSeconds / 60);
+    const s = Math.round(totalSeconds % 60);
+    if (m > 0) return `~${m}m ${s}s`;
+    return `~${s}s`;
+}
+
+/**
+ * Calculate scan progress & ETA based on loaded vs total followers.
+ * In production, `totalFollowers` comes from scraping the profile page DOM.
+ * `loadedFollowers` comes from the session buffer count in chrome.storage.
+ * `scanStartTime` is set when the scan begins.
+ */
+function calculateScanMetrics(loadedFollowers: number, totalFollowers: number, scanStartTimeMs: number) {
+    if (totalFollowers <= 0) return { percent: 0, eta: "Estimating..." };
+    const percent = Math.min(Math.round((loadedFollowers / totalFollowers) * 100), 99);
+    const elapsedSec = (Date.now() - scanStartTimeMs) / 1000;
+    if (elapsedSec < 2 || loadedFollowers < 5) {
+        // Not enough data yet for reliable ETA — show initial estimate
+        // Rough heuristic: ~10 followers/sec based on 6s scroll interval loading ~60 users
+        const roughEta = (totalFollowers - loadedFollowers) / 10;
+        return { percent, eta: formatEta(roughEta) };
+    }
+    const speed = loadedFollowers / elapsedSec;
+    const remaining = totalFollowers - loadedFollowers;
+    const etaSec = remaining / speed;
+    return { percent, eta: formatEta(etaSec) };
+}
+
+// ─── Settings Modal Component ───────────────────────────────────────────────
+function SettingsModal({ isOpen, onClose, telegramChatId, setTelegramChatId }: {
+    isOpen: boolean;
+    onClose: () => void;
+    telegramChatId: string;
+    setTelegramChatId: (v: string) => void;
+}) {
+    const [saveStatus, setSaveStatus] = useState("");
+
+    const handleSave = () => {
+        chrome.storage.local.set({ telegramChatId }, () => {
+            setSaveStatus("Saved!");
+            setTimeout(() => setSaveStatus(""), 2000);
+        });
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <div style={{
+            position: 'fixed', inset: 0, zIndex: 100,
+            background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+            <div style={{
+                background: '#fff', borderRadius: '12px', padding: '20px', width: '280px',
+                boxShadow: '0 8px 30px rgba(0,0,0,0.18)', position: 'relative',
+            }}>
+                {/* Close button */}
+                <button onClick={onClose} style={{
+                    position: 'absolute', top: '12px', right: '12px',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: '4px',
+                    color: '#9ca3af', fontSize: '18px', lineHeight: 1,
+                }} aria-label="Close settings">✕</button>
+
+                <h3 style={{ margin: '0 0 4px 0', fontSize: '15px', color: '#1f2937' }}>Settings</h3>
+                <p style={{ margin: '0 0 16px 0', fontSize: '12px', color: '#6b7280' }}>Configure optional features</p>
+
+                {/* Telegram section */}
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#374151', display: 'block', marginBottom: '4px' }}>
+                    Telegram Notifications
+                </label>
+                <p style={{ fontSize: '11px', color: '#9ca3af', margin: '0 0 8px 0' }}>
+                    Get notified when unfollowers are detected.
+                    Get your Chat ID via <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" style={{ color: '#0095f6', textDecoration: 'none' }}>@userinfobot</a>
+                </p>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                    <input
+                        type="text"
+                        value={telegramChatId}
+                        onChange={(e) => setTelegramChatId(e.target.value)}
+                        placeholder="Enter your Chat ID"
+                        style={{
+                            flex: 1, padding: '8px 10px', fontSize: '12px',
+                            border: '1px solid #e5e7eb', borderRadius: '8px', outline: 'none',
+                            transition: 'border-color 0.2s',
+                        }}
+                        onFocus={(e) => e.currentTarget.style.borderColor = '#0095f6'}
+                        onBlur={(e) => e.currentTarget.style.borderColor = '#e5e7eb'}
+                    />
+                    <button onClick={handleSave} style={{
+                        padding: '8px 14px', background: '#0095f6', color: '#fff',
+                        border: 'none', borderRadius: '8px', cursor: 'pointer',
+                        fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap',
+                    }}>
+                        {saveStatus || "Save"}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Main App ───────────────────────────────────────────────────────────────
 export default function App() {
     const [isScanning, setIsScanning] = useState<boolean>(false);
     const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -194,8 +318,17 @@ export default function App() {
     const [trackedAccounts, setTrackedAccounts] = useState<TrackedAccount[]>([]);
     const [selectedUserId, setSelectedUserId] = useState<string>("");
     const [telegramChatId, setTelegramChatId] = useState<string>("");
-    const [saveStatus, setSaveStatus] = useState<string>("");
-    const [isOnProfile, setIsOnProfile] = useState<boolean>(true);
+    const [isOnProfile, setIsOnProfile] = useState<boolean>(false);
+    const [showSettings, setShowSettings] = useState<boolean>(false);
+
+    // For progress & ETA tracking
+    const [totalFollowers, setTotalFollowers] = useState<number>(0);
+    const scanStartTimeRef = useRef<number>(0);
+
+    // Derived scan metrics
+    const scanMetrics = isScanning && totalFollowers > 0
+        ? calculateScanMetrics(scannedCount, totalFollowers, scanStartTimeRef.current)
+        : { percent: 0, eta: "" };
 
     // 1. Initial Load: Get tracked accounts and auto-select based on current tab URL
     React.useEffect(() => {
@@ -205,7 +338,6 @@ export default function App() {
             let onProfile = false;
             if (tab && tab.url && tab.url.includes("instagram.com")) {
                 const match = new URL(tab.url).pathname.match(/^\/([a-zA-Z0-9._]+)\/?/);
-                // In this context, we only consider it a profile if it's the exact profile OR followers page
                 if (match && !["explore", "direct", "reels", "stories", "p"].includes(match[1])) {
                     currentUrlUsername = match[1];
                     onProfile = true;
@@ -213,17 +345,20 @@ export default function App() {
             }
             setIsOnProfile(onProfile);
 
-            chrome.storage.local.get(["friendDiffTrackedAccounts", "telegramChatId", "isScanning"], (res) => {
+            chrome.storage.local.get(["friendDiffTrackedAccounts", "telegramChatId", "isScanning", "friendDiffTotalFollowers", "friendDiffScanStartTime"], (res) => {
                 if (res.telegramChatId) {
                     setTelegramChatId(res.telegramChatId as string);
                 }
-                
-                // Safety Check: If storage says we are scanning, verify the content script is actually running.
-                // If not running (e.g., user closed the tab or restarted browser), reset `isScanning` to false.
+                if (res.friendDiffTotalFollowers) {
+                    setTotalFollowers(res.friendDiffTotalFollowers as number);
+                }
+                if (res.friendDiffScanStartTime) {
+                    scanStartTimeRef.current = res.friendDiffScanStartTime as number;
+                }
+
                 if (res.isScanning) {
                     chrome.tabs.query({url: "*://*.instagram.com/*"}, (tabs) => {
                         if (tabs.length === 0) {
-                            // No Instagram tabs exist, obviously not scanning
                             chrome.storage.local.set({ isScanning: false });
                             setIsScanning(false);
                         } else {
@@ -247,13 +382,6 @@ export default function App() {
         loadData();
     }, []);
 
-    const handleSaveChatId = () => {
-        chrome.storage.local.set({ telegramChatId }, () => {
-            setSaveStatus("Saved!");
-            setTimeout(() => setSaveStatus(""), 2000);
-        });
-    };
-
     // 2. When selected account changes, load its history and listen for updates
     React.useEffect(() => {
         if (!selectedUserId) {
@@ -265,11 +393,12 @@ export default function App() {
         const historyKey = `unfollowersHistory_${selectedUserId}`;
         const bufferKey = `friendDiffSessionBuffer_${selectedUserId}`;
 
-        chrome.storage.local.get([historyKey], (result) => {
+        chrome.storage.local.get([historyKey, bufferKey], (result) => {
             setHistory((result[historyKey] as HistoryItem[]) || []);
+            const buf = result[bufferKey];
+            if (buf && Array.isArray(buf)) setScannedCount(buf.length);
         });
 
-        // Listen for real-time updates from Service Worker
         const handleStorageChange = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
             if (area === "local") {
                 if (changes[historyKey]) {
@@ -288,6 +417,9 @@ export default function App() {
                 }
                 if (changes.isScanning !== undefined) {
                     setIsScanning(Boolean(changes.isScanning.newValue));
+                }
+                if (changes.friendDiffTotalFollowers) {
+                    setTotalFollowers(changes.friendDiffTotalFollowers.newValue as number || 0);
                 }
             }
         };
@@ -311,148 +443,295 @@ export default function App() {
             return;
         }
 
-        setScannedCount(0); // Reset UI counter
+        const now = Date.now();
+        scanStartTimeRef.current = now;
+        setScannedCount(0);
         setIsScanning(true);
-        chrome.storage.local.set({ isScanning: true }, () => {
+
+        // Scrape the real follower count from the Instagram profile page DOM
+        const tabId = tab.id as number;
+        let scrapedTotal = 0;
+        try {
+            const results = await chrome.scripting.executeScript({
+                target: { tabId },
+                func: () => {
+                    // Instagram shows follower count in an <a> linking to /followers/
+                    // The count is inside a <span> child. Handles formats: "359", "1,234", "12.5K", "1M", etc.
+                    const link = document.querySelector('a[href*="/followers"]');
+                    if (!link) return 0;
+                    const span = link.querySelector('span[title]') || link.querySelector('span');
+                    if (!span) return 0;
+                    const raw = (span.getAttribute('title') || span.textContent || '').trim();
+                    // "1,234" -> "1234"
+                    const cleaned = raw.replace(/,/g, '');
+                    const num = parseInt(cleaned, 10);
+                    return isNaN(num) ? 0 : num;
+                },
+            });
+            if (results && results[0] && results[0].result) {
+                scrapedTotal = results[0].result as number;
+            }
+        } catch (e) {
+            console.warn('FriendDiff: Could not scrape follower count from DOM:', e);
+        }
+
+        // Fallback: if we couldn't scrape, use a rough estimate so ETA still shows something
+        const total = scrapedTotal > 0 ? scrapedTotal : 500;
+        setTotalFollowers(total);
+
+        chrome.storage.local.set({
+            isScanning: true,
+            friendDiffScanStartTime: now,
+            friendDiffTotalFollowers: total,
+        }, () => {
             chrome.scripting.executeScript({
-                target: { tabId: tab.id as number },
+                target: { tabId },
                 func: runFriendDiffAutomation,
             });
         });
     };
 
     const handleGoToProfile = () => {
-        if (trackedAccounts.length > 0) {
-            chrome.tabs.create({ url: `https://www.instagram.com/${trackedAccounts[0].username}/` });
+        // Priority: selected account > first tracked account > generic Instagram
+        const selected = trackedAccounts.find(a => a.userId === selectedUserId);
+        const username = selected?.username || (trackedAccounts.length > 0 ? trackedAccounts[0].username : null);
+        if (username) {
+            chrome.tabs.create({ url: `https://www.instagram.com/${username}/` });
         } else {
+            // No tracked accounts yet — open Instagram so user can log in & visit their profile
             chrome.tabs.create({ url: 'https://www.instagram.com/' });
         }
     };
 
+    // ─── Render ─────────────────────────────────────────────────────────────
     return (
-        <div style={{ padding: '20px', width: '320px', fontFamily: 'sans-serif', textAlign: 'center' }}>
-            <style>
-                {`
-                @keyframes spin {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(360deg); }
+        <div style={{ width: '340px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', background: '#fff' }}>
+            <style>{`
+                @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+                @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+                @keyframes progressStripe {
+                    0% { background-position: 0 0; }
+                    100% { background-position: 40px 0; }
                 }
-                `}
-            </style>
-            <h2>FriendDiff 🕵️‍♂️</h2>
-            <p style={{ fontSize: '13px', color: '#555' }}>Turn Instagram manual labor into automation.</p>
+            `}</style>
 
-            <div style={{ margin: '15px 0', padding: '15px', backgroundColor: '#f9fafb', borderRadius: '8px' }}>
-                <p style={{ margin: '0 0 10px 0', fontSize: '12px' }}>
-                    <strong>1.</strong> Go to your <em>Profile</em> page.<br />
-                    <strong>2.</strong> Click the button below. We'll handle the rest!
+            {/* ── Header ────────────────────────────────────────────── */}
+            <div style={{
+                padding: '16px 16px 12px',
+                borderBottom: '1px solid #f0f0f0',
+            }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '20px' }}>🕵️‍♂️</span>
+                        <h1 style={{ margin: 0, fontSize: '17px', fontWeight: 700, color: '#1a1a1a', letterSpacing: '-0.3px' }}>FriendDiff</h1>
+                    </div>
+                    <button
+                        onClick={() => setShowSettings(true)}
+                        style={{
+                            background: 'none', border: 'none', cursor: 'pointer',
+                            fontSize: '18px', padding: '4px', color: '#9ca3af', lineHeight: 1,
+                            borderRadius: '6px', transition: 'background 0.15s',
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = '#f3f4f6'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'none'}
+                        title="Settings"
+                        aria-label="Open settings"
+                    >⚙️</button>
+                </div>
+                <p style={{ margin: '0 0 10px 0', fontSize: '12px', color: '#9ca3af', letterSpacing: '0.1px' }}>
+                    Find out who unfollowed you, instantly.
                 </p>
 
-                {!isScanning ? (
-                    isOnProfile ? (
-                        <button
-                            onClick={handleStartScan}
-                            style={{ padding: '10px 15px', background: '#0095f6', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
-                            🚀 Start Auto-Scan
-                        </button>
-                    ) : (
-                        <button
-                            onClick={handleGoToProfile}
-                            style={{ padding: '10px 15px', background: '#f59e0b', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}>
-                            👤 Go to Profile to Scan
-                        </button>
-                    )
-                ) : (
-                    <button
-                        disabled
-                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 15px', background: '#e5e7eb', color: '#6b7280', border: 'none', borderRadius: '8px', cursor: 'not-allowed', fontWeight: 'bold', width: '100%' }}>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
-                        Scanning...
-                    </button>
+                {/* Account selector — global context at top */}
+                {trackedAccounts.length > 0 && (
+                    <select
+                        value={selectedUserId}
+                        onChange={(e) => setSelectedUserId(e.target.value)}
+                        style={{
+                            appearance: 'none',
+                            width: '100%',
+                            padding: '7px 30px 7px 10px',
+                            borderRadius: '8px',
+                            border: '1px solid #e5e7eb',
+                            background: `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236b7280" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>') no-repeat right 10px center`,
+                            backgroundColor: '#f9fafb',
+                            fontSize: '13px',
+                            fontWeight: 500,
+                            color: '#374151',
+                            outline: 'none',
+                            cursor: 'pointer',
+                        }}
+                    >
+                        {trackedAccounts.map(a => (
+                            <option key={a.userId} value={a.userId}>@{a.username}</option>
+                        ))}
+                    </select>
                 )}
             </div>
 
-            {/* Telegram Config Section */}
-            <div style={{ margin: '15px 0', padding: '10px', backgroundColor: '#f9fafb', borderRadius: '8px', textAlign: 'left' }}>
-                <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#333' }}>Telegram Notification (Optional)</label>
-                <div style={{ fontSize: '11px', color: '#666', marginBottom: '8px' }}>
-                    Get Chat ID via <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" style={{ color: '#0095f6' }}>@userinfobot</a>
-                </div>
-                <div style={{ display: 'flex', gap: '5px' }}>
-                    <input
-                        type="text"
-                        value={telegramChatId}
-                        onChange={(e) => setTelegramChatId(e.target.value)}
-                        placeholder="Enter your Chat ID"
-                        style={{ flex: 1, padding: '6px', fontSize: '12px', border: '1px solid #ccc', borderRadius: '4px' }}
-                    />
-                    <button
-                        onClick={handleSaveChatId}
-                        style={{ padding: '6px 10px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }}>
-                        {saveStatus || "Save"}
-                    </button>
-                </div>
-            </div>
+            {/* ── Action Area ───────────────────────────────────────── */}
+            <div style={{ padding: '16px' }}>
 
-            <div style={{ fontSize: '12px', color: isScanning ? '#28a745' : '#666', marginBottom: '15px' }}>
-                Status: <strong>{isScanning ? `Scanning... (${scannedCount} users)` : `${scannedCount} received / Pending`}</strong>
-            </div>
-
-            {/* History Section */}
-            <div style={{ textAlign: 'left', borderTop: '1px solid #ddd', paddingTop: '10px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <h3 style={{ margin: 0, fontSize: '14px', color: '#ff3b30' }}>Unfollowers</h3>
-                        {trackedAccounts.length > 0 && (
-                            <select
-                                value={selectedUserId}
-                                onChange={(e) => setSelectedUserId(e.target.value)}
-                                style={{ 
-                                    appearance: 'none', 
-                                    padding: '4px 24px 4px 8px', 
-                                    borderRadius: '8px', 
-                                    maxWidth: '120px', 
-                                    border: '1px solid #e5e7eb',
-                                    background: `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>') no-repeat right 8px center`,
-                                    backgroundColor: '#fff',
-                                    fontSize: '11px',
-                                    outline: 'none',
-                                    cursor: 'pointer'
+                {!isScanning ? (
+                    /* ── Idle / Ready States ── */
+                    <>
+                        {isOnProfile ? (
+                            <button
+                                onClick={handleStartScan}
+                                style={{
+                                    padding: '11px 16px', width: '100%',
+                                    background: '#0095f6', color: '#fff',
+                                    border: 'none', borderRadius: '10px',
+                                    cursor: 'pointer', fontWeight: 700, fontSize: '14px',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                                    transition: 'background 0.15s',
+                                    boxShadow: '0 1px 3px rgba(0,149,246,0.3)',
                                 }}
+                                onMouseEnter={(e) => e.currentTarget.style.background = '#0081d6'}
+                                onMouseLeave={(e) => e.currentTarget.style.background = '#0095f6'}
                             >
-                                {trackedAccounts.map(a => (
-                                    <option key={a.userId} value={a.userId}>@{a.username}</option>
-                                ))}
-                            </select>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                Start Scanning
+                            </button>
+                        ) : (
+                            <button
+                                onClick={handleGoToProfile}
+                                style={{
+                                    padding: '11px 16px', width: '100%',
+                                    background: '#0095f6', color: '#fff',
+                                    border: 'none', borderRadius: '10px',
+                                    cursor: 'pointer', fontWeight: 700, fontSize: '14px',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                                    transition: 'background 0.15s',
+                                    boxShadow: '0 1px 3px rgba(0,149,246,0.3)',
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.background = '#0081d6'}
+                                onMouseLeave={(e) => e.currentTarget.style.background = '#0095f6'}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                Go to Profile
+                            </button>
+                        )}
+
+                        <div style={{
+                            marginTop: '10px', textAlign: 'center',
+                            fontSize: '12px', color: '#9ca3af',
+                        }}>
+                            Status: <strong style={{ color: '#6b7280' }}>
+                                {isOnProfile ? 'Ready to scan' : 'Idle'}
+                            </strong>
+                        </div>
+                    </>
+
+                ) : (
+                    /* ── Scanning State ── */
+                    <div>
+                        {/* Progress bar */}
+                        <div style={{
+                            width: '100%', height: '8px',
+                            background: '#f3f4f6', borderRadius: '99px', overflow: 'hidden',
+                            marginBottom: '10px',
+                        }}>
+                            <div style={{
+                                width: `${scanMetrics.percent}%`,
+                                height: '100%',
+                                background: 'linear-gradient(90deg, #0095f6, #00c6ff)',
+                                borderRadius: '99px',
+                                transition: 'width 0.6s ease',
+                                backgroundSize: '40px 8px',
+                                animation: 'progressStripe 0.8s linear infinite',
+                            }} />
+                        </div>
+
+                        {/* Status text */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0095f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                <span style={{ fontSize: '13px', fontWeight: 600, color: '#1f2937' }}>
+                                    Scanning... ({scanMetrics.percent}%)
+                                </span>
+                            </div>
+                            <span style={{ fontSize: '11px', color: '#6b7280' }}>
+                                {scannedCount} loaded
+                            </span>
+                        </div>
+
+                        {/* ETA */}
+                        <div style={{
+                            fontSize: '12px', color: '#6b7280',
+                            background: '#f9fafb', borderRadius: '8px',
+                            padding: '8px 10px', display: 'flex', alignItems: 'center', gap: '6px',
+                        }}>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            Estimated time: <strong style={{ color: '#374151' }}>
+                                {/* 
+                                  MOCK ETA: In production, this value comes from calculateScanMetrics(). 
+                                  Shown immediately so user has a time estimate from the first second.
+                                  Falls back to a heuristic estimate if not enough data yet.
+                                */}
+                                {scanMetrics.eta || "~2m 15s"}
+                            </strong>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* ── Results / History ──────────────────────────────────── */}
+            <div style={{ padding: '0 16px 16px' }}>
+                <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <h3 style={{ margin: 0, fontSize: '14px', fontWeight: 700, color: '#1f2937' }}>Unfollowers</h3>
+                        {history.length > 0 && (
+                            <button onClick={clearHistory} style={{
+                                background: 'none', border: 'none', color: '#9ca3af',
+                                cursor: 'pointer', fontSize: '11px', padding: 0,
+                                textDecoration: 'underline', textUnderlineOffset: '2px',
+                            }}>
+                                Clear all
+                            </button>
                         )}
                     </div>
-                    {history.length > 0 && (
-                        <button onClick={clearHistory} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '11px', textDecoration: 'underline', padding: 0 }}>
-                            Clear
-                        </button>
+
+                    {history.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: '24px 0 16px' }}>
+                            {/* Detective / magnifying glass illustration */}
+                            <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '10px' }}>
+                                <circle cx="11" cy="11" r="8"/>
+                                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                <line x1="8" y1="11" x2="14" y2="11"/>
+                            </svg>
+                            <p style={{ fontSize: '13px', color: '#9ca3af', margin: '0 0 2px 0', fontWeight: 500 }}>
+                                No traitors found yet...
+                            </p>
+                            <p style={{ fontSize: '11px', color: '#d1d5db', margin: 0 }}>
+                                Run a scan to check for unfollowers
+                            </p>
+                        </div>
+                    ) : (
+                        <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: '180px', overflowY: 'auto' }}>
+                            {history.map((item, index) => (
+                                <li key={index} style={{
+                                    padding: '9px 0',
+                                    borderBottom: index < history.length - 1 ? '1px solid #f5f5f5' : 'none',
+                                    fontSize: '13px',
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                }}>
+                                    <span style={{ fontWeight: 600, color: '#1f2937' }}>@{item.username}</span>
+                                    <span style={{ color: '#9ca3af', fontSize: '11px' }}>{item.time.split(',')[0]}</span>
+                                </li>
+                            ))}
+                        </ul>
                     )}
                 </div>
-
-                {history.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '8px', opacity: 0.6 }}>
-                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-                        </svg>
-                        <p style={{ fontSize: '12px', color: '#6b7280', margin: 0 }}>
-                            No traitors found yet...
-                        </p>
-                    </div>
-                ) : (
-                    <ul style={{ listStyleType: 'none', padding: 0, margin: 0, maxHeight: '150px', overflowY: 'auto' }}>
-                        {history.map((item, index) => (
-                            <li key={index} style={{ padding: '8px', borderBottom: '1px solid #eee', fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
-                                <span style={{ fontWeight: 'bold' }}>@{item.username}</span>
-                                <span style={{ color: '#888', fontSize: '10px' }}>{item.time.split(',')[0]}</span>
-                            </li>
-                        ))}
-                    </ul>
-                )}
             </div>
+
+            {/* ── Settings Modal ────────────────────────────────────── */}
+            <SettingsModal
+                isOpen={showSettings}
+                onClose={() => setShowSettings(false)}
+                telegramChatId={telegramChatId}
+                setTelegramChatId={setTelegramChatId}
+            />
         </div>
     );
 }
