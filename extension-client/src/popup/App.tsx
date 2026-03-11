@@ -221,19 +221,32 @@ function formatEta(totalSeconds: number): string {
  * `loadedFollowers` comes from the session buffer count in chrome.storage.
  * `scanStartTime` is set when the scan begins.
  */
-function calculateScanMetrics(loadedFollowers: number, totalFollowers: number, scanStartTimeMs: number) {
+function calculateScanMetrics(loadedFollowers: number, totalFollowers: number, scanStartTimeMs: number, recentSpeed: number) {
     if (totalFollowers <= 0) return { percent: 0, eta: "Estimating..." };
     const percent = Math.min(Math.round((loadedFollowers / totalFollowers) * 100), 99);
     const elapsedSec = (Date.now() - scanStartTimeMs) / 1000;
     if (elapsedSec < 2 || loadedFollowers < 5) {
-        // Not enough data yet for reliable ETA — show initial estimate
-        // Rough heuristic: ~10 followers/sec based on 6s scroll interval loading ~60 users
-        const roughEta = (totalFollowers - loadedFollowers) / 10;
+        // Not enough data yet — use conservative heuristic
+        // Instagram averages ~1.5 followers/sec accounting for slow zones in the middle
+        const roughEta = (totalFollowers - loadedFollowers) / 1.5;
         return { percent, eta: formatEta(roughEta) };
     }
-    const speed = loadedFollowers / elapsedSec;
+    const avgSpeed = loadedFollowers / elapsedSec;
+
+    // Blend average speed with recent speed (sliding window) for adaptive ETA
+    // This responds to Instagram's variable loading: fast at start/end, slow in middle
+    let effectiveSpeed: number;
+    if (recentSpeed > 0) {
+        effectiveSpeed = 0.3 * avgSpeed + 0.7 * recentSpeed;
+    } else {
+        effectiveSpeed = avgSpeed;
+    }
+
+    // Clamp to avoid infinite ETA during stalls
+    effectiveSpeed = Math.max(effectiveSpeed, 0.05);
+
     const remaining = totalFollowers - loadedFollowers;
-    const etaSec = remaining / speed;
+    const etaSec = remaining / effectiveSpeed;
     return { percent, eta: formatEta(etaSec) };
 }
 
@@ -325,9 +338,23 @@ export default function App() {
     const [totalFollowers, setTotalFollowers] = useState<number>(0);
     const scanStartTimeRef = useRef<number>(0);
 
-    // Derived scan metrics
+    // Adaptive ETA: track recent loading speed over a 30-second sliding window
+    const speedSamplesRef = useRef<{count: number, time: number}[]>([]);
+
+    function getRecentSpeed(): number {
+        const samples = speedSamplesRef.current;
+        if (samples.length < 2) return 0;
+        const oldest = samples[0];
+        const newest = samples[samples.length - 1];
+        const deltaCount = newest.count - oldest.count;
+        const deltaSec = (newest.time - oldest.time) / 1000;
+        if (deltaSec <= 0 || deltaCount <= 0) return 0;
+        return deltaCount / deltaSec;
+    }
+
+    // Derived scan metrics (uses adaptive speed for responsive ETA)
     const scanMetrics = isScanning && totalFollowers > 0
-        ? calculateScanMetrics(scannedCount, totalFollowers, scanStartTimeRef.current)
+        ? calculateScanMetrics(scannedCount, totalFollowers, scanStartTimeRef.current, getRecentSpeed())
         : { percent: 0, eta: "" };
 
     // 1. Initial Load: Get tracked accounts and auto-select based on current tab URL
@@ -428,6 +455,20 @@ export default function App() {
         return () => chrome.storage.onChanged.removeListener(handleStorageChange);
     }, [selectedUserId]);
 
+    // Track loading speed samples for adaptive ETA
+    React.useEffect(() => {
+        if (isScanning && scannedCount > 0) {
+            const now = Date.now();
+            speedSamplesRef.current.push({ count: scannedCount, time: now });
+            // Keep only the last 30 seconds for recent speed calculation
+            const cutoff = now - 30000;
+            speedSamplesRef.current = speedSamplesRef.current.filter(s => s.time >= cutoff);
+        }
+        if (!isScanning) {
+            speedSamplesRef.current = [];
+        }
+    }, [scannedCount, isScanning]);
+
     const clearHistory = () => {
         if (!selectedUserId) return;
         const historyKey = `unfollowersHistory_${selectedUserId}`;
@@ -446,6 +487,7 @@ export default function App() {
         const now = Date.now();
         scanStartTimeRef.current = now;
         setScannedCount(0);
+        speedSamplesRef.current = [];
         setIsScanning(true);
 
         // Scrape the real follower count from the Instagram profile page DOM
