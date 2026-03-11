@@ -116,7 +116,7 @@ function broadcastLog(message: string, type: "info" | "error" = "info"): void {
   });
 }
 
-chrome.runtime.onMessage.addListener((request, _sender, _sendResponse) => {
+chrome.runtime.onMessage.addListener((request, sender, _sendResponse) => {
   if (request.action === 'REPORT_FRIEND_LIST') {
     const freshBatch: UserSnapshot[] = request.data;
     const isEnd: boolean = request.isEnd;
@@ -192,11 +192,20 @@ chrome.runtime.onMessage.addListener((request, _sender, _sendResponse) => {
 
             // Overwrite snapshot
             await saveSnapshot(userId, currentBuffer);
+
+            // Auto-refresh the Instagram tab for a clean UX
+            if (sender.tab?.id) {
+              setTimeout(() => chrome.tabs.reload(sender.tab!.id!), 1500);
+            }
             await chrome.storage.local.set({ isScanning: false });
           } else {
             broadcastLog("Scan complete: No changes detected.");
             if (currentBuffer.length > oldData.length) {
               await saveSnapshot(userId, currentBuffer);
+            }
+            // Auto-refresh the Instagram tab for a clean UX
+            if (sender.tab?.id) {
+              setTimeout(() => chrome.tabs.reload(sender.tab!.id!), 1500);
             }
             await chrome.storage.local.set({ isScanning: false });
           }
@@ -204,6 +213,10 @@ chrome.runtime.onMessage.addListener((request, _sender, _sendResponse) => {
           broadcastLog("Initial scan complete. Snapshot saved.");
           await saveSnapshot(userId, currentBuffer);
           await chrome.storage.local.set({ isScanning: false });
+          // Auto-refresh the Instagram tab for a clean UX
+          if (sender.tab?.id) {
+            setTimeout(() => chrome.tabs.reload(sender.tab!.id!), 1500);
+          }
         }
       }
     })();
