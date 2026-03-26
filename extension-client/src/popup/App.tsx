@@ -533,16 +533,40 @@ export default function App() {
         });
     };
 
-    const handleGoToProfile = () => {
+    const handleGoToProfile = async () => {
         // Priority: selected account > first tracked account > generic Instagram
         const selected = trackedAccounts.find(a => a.userId === selectedUserId);
         const username = selected?.username || (trackedAccounts.length > 0 ? trackedAccounts[0].username : null);
-        if (username) {
-            chrome.tabs.create({ url: `https://www.instagram.com/${username}/` });
-        } else {
+
+        if (!username) {
             // No tracked accounts yet — open Instagram so user can log in & visit their profile
             chrome.tabs.create({ url: 'https://www.instagram.com/' });
+            return;
         }
+
+        const profileUrl = `https://www.instagram.com/${encodeURIComponent(username)}/`;
+
+        // If already logged in as the same user, just open profile.
+        const loggedInUserId = await new Promise<string | null>((resolve) => {
+            chrome.cookies.get({ url: 'https://www.instagram.com', name: 'ds_user_id' }, (cookie) => {
+                resolve(cookie?.value || null);
+            });
+        });
+        if (loggedInUserId && selected?.userId && loggedInUserId === String(selected.userId)) {
+            chrome.tabs.create({ url: profileUrl });
+            return;
+        }
+
+        // Otherwise, we need the user to login as the selected account.
+        // Store the username so the content script can auto-fill it on the login page.
+        chrome.storage.local.set({ friendDiffAutoLoginUsername: username }, () => {
+            // If the user is already logged in as a different account, kick them out first.
+            if (loggedInUserId) {
+                chrome.tabs.create({ url: 'https://www.instagram.com/accounts/logout/' });
+            } else {
+                chrome.tabs.create({ url: 'https://www.instagram.com/accounts/login/' });
+            }
+        });
     };
 
     // ─── Render ─────────────────────────────────────────────────────────────
