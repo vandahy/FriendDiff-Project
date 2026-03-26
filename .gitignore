@@ -46,3 +46,11 @@ Thumbs.db
 .env.development.local
 .env.test.local
 .env.production.local
+.gitnexus
+
+# ==========================================
+# AI Agent / Local Instruction Files
+# ==========================================
+.claude/
+AGENTS.md
+CLAUDE.md
