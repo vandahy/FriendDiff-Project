@@ -1,8 +1,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from app.api import routes
+from app.services.analytics_db import init_db
+from app.core.scheduler import setup_scheduler
 
-app = FastAPI(title="FriendDiff API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    init_db()
+    scheduler = setup_scheduler()
+    yield
+    # Shutdown
+    scheduler.shutdown()
+
+app = FastAPI(title="FriendDiff API", lifespan=lifespan)
 
 # Setup CORS to allow the Chrome Extension to communicate with this backend.
 # In production, replace "*" with the actual chrome-extension://<id> origin.

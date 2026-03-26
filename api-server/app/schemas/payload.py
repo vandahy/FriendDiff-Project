@@ -10,4 +10,11 @@ class UnfollowerItem(BaseModel):
 
 class UnfollowPayload(BaseModel):
     unfollowers: List[UnfollowerItem]
+    telegram_chat_id: Optional[str] = None
     timestamp: Optional[int] = None
+
+class AnalyticsPayload(BaseModel):
+    anonymous_id: str
+    extension_version: str
+    event_type: str # "Install" or "Active"
+    timestamp: str
